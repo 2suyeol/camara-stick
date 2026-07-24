@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>스마트 지팡이 AI</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      margin: 0; padding: 16px;
+      background: #12202e; color: #eef4f9;
+      font-family: -apple-system, "맑은 고딕", sans-serif;
+      text-align: center;
+    }
+    h1 { font-size: 18px; margin: 0 0 14px; }
+    button {
+      width: 100%; padding: 18px; border: 0; border-radius: 10px;
+      background: #ffb627; color: #12202e;
+      font-size: 18px; font-weight: bold; font-family: inherit;
+      margin-bottom: 14px;
+    }
+    button:disabled { opacity: .4; }
+    #webcam-container canvas {
+      width: 100%; max-width: 340px; border-radius: 10px;
+    }
+    #result { margin: 14px 0 6px; font-size: 26px; font-weight: bold; }
+    #server-result { font-size: 14px; color: #8fa6be; min-height: 20px; }
+  </style>
+</head>
+
+<body>
+  <h1>스마트 지팡이 · AI 인식</h1>
+
+  <button id="start-button">카메라 시작</button>
+
+  <div id="webcam-container"></div>
+  <div id="result">대기 중</div>
+  <div id="server-result"></div>
+
+<script>
+  const MODEL_URL =
+    "https://teachablemachine.withgoogle.com/models/4NWAi0udF/";
+
+  // ↓↓↓ 여기에 Apps Script 배포 주소를 붙여넣으세요 ↓↓↓
+  const APPS_SCRIPT_URL =
+    "https://script.google.com/macros/s/여기에_배포_ID/exec";
+
+  // 클래스 이름으로 ID를 정한다. 순서가 바뀌어도 안전하다.
+  const NAME_TO_ID = { "없음": 0, "초록불": 1, "빨간불": 2 };
+
+  const CONFIDENCE_THRESHOLD = 0.85;
+  const REQUIRED_STABLE_COUNT = 5;
+
+  let model, webcam;
+  let lastDetectedId = -1;
+  let lastSentId = -1;
+  let stableCount = 0;
+
+  document.getElementById("start-button")
+    .addEventListener("click", init);
+
+  async function init() {
+    try {
+      document.getElementById("result").textContent = "불러오는 중...";
+
+      model = await tmImage.load(
+        MODEL_URL + "model.json",
+        MODEL_URL + "metadata.json"
+      );
+
+      webcam = new tmImage.Webcam(320, 320, false);
+
+      // 휴대폰에서 후면(바깥) 카메라를 쓰도록 지정한다.
+      // 이 옵션이 없으면 셀카 카메라가 켜진다.
+      await webcam.setup({ facingMode: { ideal: "environment" } });
+      await webcam.play();
+
+      document.getElementById("webcam-container")
+        .appendChild(webcam.canvas);
+      document.getElementById("start-button").disabled = true;
+
+      keepScreenAwake();
+      window.requestAnimationFrame(loop);
+
+    } catch (error) {
+      console.error(error);
+      document.getElementById("result").textContent =
+        "카메라를 열지 못했습니다";
+      document.getElementById("server-result").textContent = error.message;
+    }
+  }
+
+  // 화면이 꺼지면 카메라도 멈춘다. 시연 중에 꺼지지 않게 잡아둔다.
+  async function keepScreenAwake() {
+    try {
+      if ("wakeLock" in navigator) {
+        await navigator.wakeLock.request("screen");
+      }
+    } catch (e) { /* 지원 안 하면 그냥 넘어간다 */ }
+  }
+
+  async function loop() {
+    webcam.update();
+    await predict();
+    window.requestAnimationFrame(loop);
+  }
+
+  async function predict() {
+    const predictions = await model.predict(webcam.canvas);
+
+    let best = predictions[0];
+    for (let i = 1; i < predictions.length; i++) {
+      if (predictions[i].probability > best.probability) {
+        best = predictions[i];
+      }
+    }
+
+    const classId = NAME_TO_ID[best.className] ?? 0;
+
+    document.getElementById("result").textContent =
+      `${best.className}  ${(best.probability * 100).toFixed(0)}%`;
+    document.getElementById("result").style.color =
+      best.className.includes("초록") ? "#2ec4b6" :
+      best.className.includes("빨")   ? "#ff6b6b" : "#8fa6be";
+
+    if (best.probability < CONFIDENCE_THRESHOLD) {
+      stableCount = 0;
+      lastDetectedId = -1;
+      return;
+    }
+
+    if (classId === lastDetectedId) {
+      stableCount++;
+    } else {
+      lastDetectedId = classId;
+      stableCount = 1;
+    }
+
+    if (stableCount >= REQUIRED_STABLE_COUNT && classId !== lastSentId) {
+      lastSentId = classId;
+      sendClassId(classId);
+    }
+  }
+
+  async function sendClassId(id) {
+    try {
+      // no-cors 로 보내면 응답은 못 읽지만 전송은 확실하게 된다.
+      await fetch(APPS_SCRIPT_URL, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: String(id)
+      });
+      document.getElementById("server-result").textContent =
+        "전송 완료 → ID " + id;
+    } catch (error) {
+      console.error(error);
+      document.getElementById("server-result").textContent = "전송 실패";
+    }
+  }
+</script>
+</body>
+</html>
